@@ -9,6 +9,11 @@ var config = {
   CW_ROOM_ID: '99999999',
 
   CW_BOT_ACCOUNT: 1234567,
+
+  CACHE_KEY: {
+    last_message_id: 'LAST_MESSAGE_ID',
+  },
+
 };
 **/
 
@@ -116,8 +121,20 @@ function postMsg() {
     }
   ];
 
+
+  // キャッシュから前回最後に処理したメッセージIDを取得する
+  var cache = CacheService.getScriptCache();
+  var last_message_id = cache.get(config.CACHE_KEY.last_message_id);
+
+  // 最後に処理したメッセージIDが取得できればそのIDを元に新しいメッセージを処理する
+  // 取得できなければAPIで未読分のメッセージのみ取得してくる
+  var force = last_message_id ? 1 : 0;
+
+Logger.log("==FORCE==");
+Logger.log(force);
+
   // 投稿を取得
-  var msgs = UrlFetchApp.fetch(config.CW_ENDPOINT.rooms + config.CW_ROOM_ID + '/messages?force=1', {
+  var msgs = UrlFetchApp.fetch(config.CW_ENDPOINT.rooms + config.CW_ROOM_ID + '/messages?force=' + force, {
     headers: {
       'X-ChatWorkToken': config.CW_TOKEN
     },
@@ -129,43 +146,89 @@ function postMsg() {
 
   if (msgs.length < 1) return;
 
-  var target_msg = msgs[msgs.length-1];
+  var target_msgs = [];
 
-  if ('ボス教えて' == target_msg.body || '教えてボス' == target_msg.body) {
-    text = '';
-    trigger_data.forEach( function(trigger) {
-      text += trigger.word + ' ';
+Logger.log("==LAST MSG ID==");
+Logger.log(last_message_id);
+
+  if (last_message_id) {
+    var pass_last_message = false;
+    msgs.forEach(function(value, index) {
+
+Logger.log(value.message_id + "========");
+
+      if (pass_last_message) {
+        target_msgs.push(value);
+      }
+      if (value.message_id == last_message_id) {
+        // 前回の最新メッセージより新しいものから先が今回の対象
+        pass_last_message = true;
+      }
     });
-    UrlFetchApp.fetch(config.CW_ENDPOINT.rooms + config.CW_ROOM_ID + '/messages', {
-      headers: {
-        'X-ChatWorkToken': config.CW_TOKEN
-      },
-      method: 'post',
-      payload: 'body=' + encodeURIComponent(
-        text + '\nについてこたえられるよ'
-      )
-    });
-    return;
+
+    if (!target_msgs.length) {
+      return;
+    }
+
+  } else {
+    target_msgs = msgs;
   }
 
-  for (var index in trigger_data) {
+  var target_msg = null;
 
-    var trigger = trigger_data[index];
+Logger.log("== ALL ==");
+Logger.log(target_msgs);
 
-    if ( target_msg.account.account_id != config.CW_BOT_ACCOUNT && 0 <= target_msg.body.indexOf(trigger.word) ) {
-      // 投稿
-      UrlFetchApp.fetch(config.CW_ENDPOINT.rooms + config.CW_ROOM_ID + '/messages', {
-        headers: {
-          'X-ChatWorkToken': token
-        },
-        method: 'post',
-        payload: 'body=' + encodeURIComponent(
-          trigger.msg[ Math.floor( Math.random() * trigger.msg.length ) ]
-        )
+  for (var i = 0, tmsgs_len = target_msgs.length; i < tmsgs_len; i++) {
+
+    var target_msg = target_msgs[i];
+
+Logger.log( i + "========");
+Logger.log( target_msg );
+
+    if ('ボス教えて' == target_msg.body || '教えてボス' == target_msg.body) {
+      text = '';
+      trigger_data.forEach( function(trigger) {
+        text += trigger.word + ' ';
       });
-      break;
+      postChatwork(config.CW_ENDPOINT.rooms + config.CW_ROOM_ID + '/messages',
+                   text + '\nについてこたえられるよ',
+                   target_msg);
+
+    } else {
+      for (var index in trigger_data) {
+
+        var trigger = trigger_data[index];
+
+        if ( target_msg.account.account_id != config.CW_BOT_ACCOUNT && 0 <= target_msg.body.indexOf(trigger.word) ) {
+          // 投稿
+          postChatwork(config.CW_ENDPOINT.rooms + config.CW_ROOM_ID + '/messages',
+                       trigger.msg[ Math.floor( Math.random() * trigger.msg.length ) ],
+                       target_msg);
+          break;
+        }
+      }
     }
 
   }
+
+  // しおり
+  cache.put(config.CACHE_KEY.last_message_id, target_msg.message_id, 3600);
+
+}
+
+// チャットワークに投稿
+function postChatwork(url, body, target_msg) {
+
+  var post_body = '[rp aid=' + target_msg.account.account_id + ' to=' + config.CW_ROOM_ID + '-' + target_msg.message_id + ']' + target_msg.account.name + '\n';
+  post_body += body;
+
+  UrlFetchApp.fetch(url, {
+    headers: {
+      'X-ChatWorkToken': config.CW_TOKEN
+    },
+    method: 'post',
+    payload: 'body=' + encodeURIComponent( post_body )
+  });
 
 }
